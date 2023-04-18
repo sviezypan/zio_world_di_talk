@@ -2,11 +2,8 @@ package zioworld
 
 import zio.*
 import cats.data.Reader
-import zioworld.EnvironmentOveruseDemo.AdvertisementRepository
 
 object ReaderMonad2Example {
-
-  // If we want to use multiple readers in a for-comprehension, the argument types will need to be the same
 
   val dependencyWrapper: DependencyWrapper = ???
 
@@ -83,20 +80,20 @@ object ReaderMonad2Example {
   }
 
   trait Logger {
-    def log(s: String): Task[Unit] = ZIO.log(s)
+    def log(s: String): Unit = println(s)
   }
 
   object EmailClient {
     def sendCoupon(to: String, coupon: Coupon): Reader[Logger, Unit] =
       Reader { (logger: Logger) =>
         logger.log(
-          s"sending email to ${to} with content ${coupon.title.mkString(" & ")}"
+          s"sending email to ${to} with content ${coupon.title}"
         )
       }
   }
 
   trait AdvertisementRepository {
-    def findCouponFor(id: String): Coupon = ???
+    def findCouponFor(id: String): Coupon = Coupon("buy one coca cola get one free")
   }
 
   object AdvertisementService {

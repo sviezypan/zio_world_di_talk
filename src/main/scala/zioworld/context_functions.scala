@@ -1,62 +1,91 @@
 package zioworld
 
 import zio.*
-import scala.collection.mutable.ArrayBuffer
 
-object ContextFunctionsDemo extends ZIOAppDefault:
+object ContextFunctionsDemo extends ZIOAppDefault {
 
-    def run =
-        val dbClient = new DbClient(ConnectionPool.create())
-        val customerRepo = new CustomerRepository(dbClient)
-        val logger = new Logger()
+  def run =
+    given customerRepository: CustomerRepository = CustomerRepository()
+    given advertisementRepository: AdvertisementRepository = AdvertisementRepository()
+    given logger: Logger = Logger()
+    given dbClient: DbClient = DbClient(ConnectionPool.create())
 
-        given customerService: CustomerService = new CustomerService(customerRepo, logger)
-        given advertisementService: AdvertisementService = new AdvertisementService()
-        given emailClient: EmailClient = new EmailClient(logger)
+    CashierApi.processLoyaltyCard("12345")
 
-        CashierApi.processLoyaltyCard("12345")
+  object CashierApi:
+    def processLoyaltyCard(
+        cardId: String
+    ): CustomerRepository ?=> DbClient ?=> AdvertisementRepository ?=> Logger ?=> Task[Unit] =
+      for {
+        customer <- CustomerService
+          .findCustomerByCardId(cardId)
+          .someOrFail(CustomerNotFound(cardId))
+        coupon  <- AdvertisementService.findCouponFor(customer.id)
+        _       <- EmailClient.sendCoupon(customer.email, coupon)
+      } yield ()
 
-    object CashierApi:
-        def processLoyaltyCard(cardId: String): CustomerService ?=> AdvertisementService ?=> EmailClient ?=> Task[Unit] = 
-            val customerService = summon[CustomerService]
-            val advertisementService = summon[AdvertisementService]
-            val emailClient = summon[EmailClient]
-            for {
-                customer <- customerService.findCustomerByCardId(cardId)
-                    .someOrFail(CustomerNotFound(cardId))
-                coupons  <- advertisementService.findCouponsFor(customer.id)
-                _        <- emailClient.sendCoupons(customer.email, coupons)
-            } yield ()
-    
+  object CustomerService:
+    def findCustomerByCardId(
+        id: String
+    ): CustomerRepository ?=> DbClient ?=> UIO[Option[Customer]] = 
+        val customerRepository = summon[CustomerRepository]
+        customerRepository.findById(id)
 
+  class DiscountService {
+    def discountProduct(product: Product, discountCode: String): UIO[Price] =
+      println("discounting price")
+      ZIO.succeed(Price(100, "EUR"))
 
-    class ConnectionPool():
-      def close: Unit = ???
+  }
 
-    class DbClient(connectoonPool: ConnectionPool)
+  class DbClient(connectoonPool: ConnectionPool)
 
-    class CustomerRepository(db: DbClient):
-        def findById(id: String): ZIO[Any, Nothing, Option[Customer]] = ZIO.some(Customer(id, "first_name", "name@email"))
+  class CustomerRepository {
+    def findById(id: String): DbClient ?=> UIO[Option[Customer]] = {
+        val unused = summon[DbClient]
 
-    class CustomerService(customerRepo: CustomerRepository, logger: Logger):
-        def findCustomerByCardId(id: String): ZIO[Any, Nothing, Option[Customer]] = 
-            customerRepo.findById(id)
+        ZIO.succeed(Some(Customer(id, "first_name", "name@email")))
+      }
+  }
 
-    class Logger():
-        def log(s: String) : Task[Unit] = ZIO.log(s)
+  class Logger {
+    def log(s: String): UIO[Unit] = ZIO.log(s)
+  }
 
-    class EmailClient(logger: Logger):
-        def sendCoupons(to: String, coupons: Seq[Coupon]): Task[Unit] = 
-            logger.log(s"sending email to ${to} with content ${coupons.map(_.title).mkString(" & ")}")
+  object EmailClient {
+    def sendCoupon(to: String, coupon: Coupon): Logger ?=> UIO[Unit] = { 
+        val logger = summon[Logger]
+        logger.log(
+          s"sending email to ${to} with content ${coupon.title}"
+        )
+      }
+  }
 
-    class AdvertisementService():
-        def findCouponsFor(id: String): ZIO[Any, Nothing, Seq[Coupon]] =
-            ZIO.succeed(Seq(Coupon("Coca cola buy 1 get 1 free"), Coupon("Beer discount")))
+  class AdvertisementRepository {
+    def findCouponFor(id: String): UIO[Coupon] = ZIO.succeed(Coupon("buy one coca cola get one free"))
+  }
 
-    case class Customer(id: String, name: String, email: String)
-    case class Coupon(title: String)
+  object AdvertisementService {
+    def findCouponFor(
+        id: String
+    ): AdvertisementRepository ?=> UIO[Coupon] = {
+        val advertisementRepo = summon[AdvertisementRepository]
+        advertisementRepo.findCouponFor(id)
+      }
+  }
 
-    object ConnectionPool:
-        def create(): ConnectionPool = new ConnectionPool()
+  case class Customer(id: String, name: String, email: String)
+  case class Coupon(title: String)
 
-    case class CustomerNotFound(id: String) extends Throwable
+  object ConnectionPool:
+    def create(): ConnectionPool = new ConnectionPool()
+
+  class ConnectionPool():
+    def close: Unit = ()
+
+  case class CustomerNotFound(id: String) extends Throwable
+
+  case class Price(amount: Int, currency: String)
+  case class Product(name: String, price: Price)
+
+}
