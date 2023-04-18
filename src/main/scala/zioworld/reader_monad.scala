@@ -2,62 +2,111 @@ package zioworld
 
 import zio.*
 import cats.data.Reader
+import zioworld.EnvironmentOveruseDemo.AdvertisementRepository
 
-object ReaderMonadExample extends ZIOAppDefault:
+object ReaderMonad2Example {
 
-  def run =
-    val dbClient = new DbClient(ConnectionPool.create())
-    val customerRepo = new CustomerRepository(dbClient)
-    val logger = new Logger()
-    val emailClient = new EmailClient(logger)
-    val advertisementService = new AdvertisementService()
-    val customerService = new CustomerService(customerRepo, logger)
+  // If we want to use multiple readers in a for-comprehension, the argument types will need to be the same
 
-    CashierApi
-      .processLoyaltyCard("12345")
-      .run(CashierApi(customerService, advertisementService, emailClient))
+  val dependencyWrapper: DependencyWrapper = ???
 
-  case class CashierApi(
-      customerService: CustomerService,
-      advertisementService: AdvertisementService,
-      emailClient: EmailClient
-  )
+  def run = CashierApi.processLoyaltyCard("12345")
+                   .run(dependencyWrapper)
 
-  object CashierApi:
-    def processLoyaltyCard(cardId: String) = Reader { (casierApi: CashierApi) =>
+  case class DependencyWrapper(customerRepoWrapper: CustomerRepoWrapper, 
+                               advertisementRepo: AdvertisementRepository, 
+                               logger: Logger)
+
+  case class CustomerRepoWrapper(customerRepo: CustomerRepository, 
+                                 dbClient: DbClient)
+
+  def runAlt = CashierApi.processLoyaltyCardAlt("12345").run(Dependencies)
+
+  object Dependencies extends DbClient(ConnectionPool.create()) 
+    with CustomerRepository with AdvertisementRepository with Logger
+
+  object CashierApi {
+    def processLoyaltyCard(cardId: String): Reader[DependencyWrapper, Coupon] =
       for {
-        customer <- casierApi.customerService
-          .findCustomerByCardId(cardId)
-          .someOrFail(CustomerNotFound(cardId))
-        coupons <- casierApi.advertisementService.findCouponsFor(customer.id)
-        _ <- casierApi.emailClient.sendCoupons(customer.email, coupons)
-      } yield ()
+          customer <- CustomerService.findCustomerByCardId(cardId)
+                          .local[DependencyWrapper](_.customerRepoWrapper)
+          coupon   <- AdvertisementService.findCouponFor(customer.get.id)
+                          .local[DependencyWrapper](_.advertisementRepo)
+          _        <- EmailClient.sendCoupon(customer.get.email, coupon)
+                          .local[DependencyWrapper](_.logger)
+      } yield coupon
+
+    def processLoyaltyCardAlt(cardId: String): Reader[
+      CustomerRepository & DbClient & AdvertisementRepository & Logger,
+      Coupon
+    ] = 
+      (for {
+        customer <- CustomerService.findCustomerByCardIdAlt(cardId)
+        coupon   <- AdvertisementService.findCouponFor(customer.get.id)
+        _        <- EmailClient.sendCoupon(customer.get.email, coupon)
+      } yield coupon)
+  }
+
+  object CustomerService {
+    def findCustomerByCardId(
+        id: String
+    ): Reader[CustomerRepoWrapper, Option[Customer]] =
+    Reader { (wrapper: CustomerRepoWrapper) =>
+        wrapper.customerRepo.findById(id).run(wrapper.dbClient)
     }
+
+    def findCustomerByCardIdAlt(
+        id: String
+    ): Reader[CustomerRepository & DbClient, Option[Customer]] =
+      Reader { (customerRepo: CustomerRepository & DbClient) =>
+          customerRepo.findById(id).run(customerRepo)
+      }
+  }
+
+  case class Price(amount: Int, currency: String)
+  case class Product(name: String, price: Price)
+
+  class DiscountService {
+    def discountProduct(product: Product, discountCode: String): Price =
+      println("discounting price")
+      Price(100, "EUR")
+
+  }
 
   class DbClient(connectoonPool: ConnectionPool)
 
-  class CustomerRepository(db: DbClient):
-    def findById(id: String): ZIO[Any, Nothing, Option[Customer]] =
-      ZIO.some(Customer(id, "first_name", "name@email"))
+  trait CustomerRepository {
+    def findById(id: String): Reader[DbClient, Option[Customer]] =
+      Reader { (dbClient: DbClient) =>
+        Some(Customer(id, "first_name", "name@email"))
+      }
+  }
 
-  class CustomerService(customerRepo: CustomerRepository, logger: Logger):
-    def findCustomerByCardId(id: String): ZIO[Any, Nothing, Option[Customer]] =
-      customerRepo.findById(id)
-
-  class Logger():
+  trait Logger {
     def log(s: String): Task[Unit] = ZIO.log(s)
+  }
 
-  class EmailClient(logger: Logger):
-    def sendCoupons(to: String, coupons: Seq[Coupon]): Task[Unit] =
-      logger.log(
-        s"sending email to ${to} with content ${coupons.map(_.title).mkString(" & ")}"
-      )
+  object EmailClient {
+    def sendCoupon(to: String, coupon: Coupon): Reader[Logger, Unit] =
+      Reader { (logger: Logger) =>
+        logger.log(
+          s"sending email to ${to} with content ${coupon.title.mkString(" & ")}"
+        )
+      }
+  }
 
-  class AdvertisementService():
-    def findCouponsFor(id: String): ZIO[Any, Nothing, Seq[Coupon]] =
-      ZIO.succeed(
-        Seq(Coupon("Coca cola buy 1 get 1 free"), Coupon("Beer discount"))
-      )
+  trait AdvertisementRepository {
+    def findCouponFor(id: String): Coupon = ???
+  }
+
+  object AdvertisementService {
+    def findCouponFor(
+        id: String
+    ): Reader[AdvertisementRepository, Coupon] =
+      Reader { (advertisementRepo: AdvertisementRepository) =>
+        advertisementRepo.findCouponFor(id)
+      }
+  }
 
   case class Customer(id: String, name: String, email: String)
   case class Coupon(title: String)
@@ -66,6 +115,8 @@ object ReaderMonadExample extends ZIOAppDefault:
     def create(): ConnectionPool = new ConnectionPool()
 
   class ConnectionPool():
-    def close = ???
-  
+    def close: Unit = ()
+
   case class CustomerNotFound(id: String) extends Throwable
+
+}

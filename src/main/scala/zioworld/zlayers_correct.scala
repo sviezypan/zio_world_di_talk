@@ -35,6 +35,22 @@ object ServicePatter2Demo extends ZIOAppDefault:
         _ <- emailClient.sendCoupons(customer.email, coupons)
       } yield ()
 
+  object CashierApiImpl {
+    def processLoyaltyCard(cardId: String): RIO[CashierApi, Unit] =
+      ZIO.serviceWithZIO[CashierApi](_.processLoyaltyCard(cardId))
+
+    // VS rather take instance from environment
+    // and invoke method explicitly
+    // for {
+    //   api <- ZIO.service[CashierApi]
+    //   _   <- api.processLoyaltyCard("id")
+    // } yield ()
+  }
+
+
+
+
+
   object CashierApi:
     def layer =
       ZLayer.fromFunction(CashierApiImpl.apply _)
